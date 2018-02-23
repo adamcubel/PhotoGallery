@@ -11,9 +11,14 @@ import android.support.v7.widget.GridLayoutManager;
 import android.support.v7.widget.RecyclerView;
 import android.util.Log;
 import android.view.LayoutInflater;
+import android.view.Menu;
+import android.view.MenuInflater;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageView;
+import android.support.v7.widget.SearchView;
+import android.widget.ProgressBar;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -32,6 +37,8 @@ public class PhotoGalleryFragment extends Fragment {
     private int mLastPosition = 0;
     private boolean mUserScrolled = false;
 
+    private ProgressBar mProgressBar;
+
     public static PhotoGalleryFragment newInstance() {
         return new PhotoGalleryFragment();
     }
@@ -40,36 +47,24 @@ public class PhotoGalleryFragment extends Fragment {
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setRetainInstance(true);
+        setHasOptionsMenu(true);
         // call upon the background task to fetch website data
-        new FetchItemsTask().execute();
+        updateItems();
 
         Handler responseHandler = new Handler();
         mThumbnailDownloader = new ThumbnailDownloader<>(responseHandler);
         mThumbnailDownloader.setThumbnailDownloadListener(
-            new ThumbnailDownloader.ThumbnailDownloadListener<PhotoHolder>() {
-                @Override
-                public void onThumbailDownloaded(PhotoHolder target, Bitmap thumbnail) {
-                    Drawable drawable = new BitmapDrawable(getResources(), thumbnail);
-                    target.bindDrawable(drawable);
+                new ThumbnailDownloader.ThumbnailDownloadListener<PhotoHolder>() {
+                    @Override
+                    public void onThumbailDownloaded(PhotoHolder target, Bitmap thumbnail) {
+                        Drawable drawable = new BitmapDrawable(getResources(), thumbnail);
+                        target.bindDrawable(drawable);
+                    }
                 }
-            }
         );
         mThumbnailDownloader.start();
         mThumbnailDownloader.getLooper();
         Log.i(TAG, "Background thread started");
-    }
-
-    @Override
-    public void onDestroyView() {
-        super.onDestroyView();
-        mThumbnailDownloader.clearQueue();
-    }
-
-    @Override
-    public void onDestroy() {
-        super.onDestroy();
-        mThumbnailDownloader.quit();
-        Log.i(TAG, "Background thread destroyed");
     }
 
     @Override
@@ -91,12 +86,94 @@ public class PhotoGalleryFragment extends Fragment {
                 // mUserScrolled is used to prevent duplicate calls to FetchItemsTask
                 // It gets set back to false in onPostExecute after the new data has been acquired from the server
                 if (!mUserScrolled && (mLastPosition == mItems.size() - 1)) {
-                    new FetchItemsTask().execute();
+                    updateItems();
                     mUserScrolled = true;
                 }
             }
         });
+
+        mProgressBar = (ProgressBar) v.findViewById(R.id.loading_indicator);
+        showProgressBar(true);
+
         return v;
+    }
+
+    @Override
+    public void onCreateOptionsMenu(Menu menu, MenuInflater menuInflater) {
+        super.onCreateOptionsMenu(menu, menuInflater);
+        menuInflater.inflate(R.menu.fragment_photo_gallery, menu);
+
+        MenuItem searchItem = menu.findItem(R.id.menu_item_search);
+        final SearchView searchView = (SearchView) searchItem.getActionView();
+
+        searchView.setOnQueryTextListener(new SearchView.OnQueryTextListener() {
+            @Override
+            public boolean onQueryTextSubmit(String query) {
+                Log.d(TAG, "QueryTextSubmit: " + query);
+                QueryPreferences.setStoredQuery(getActivity(), query);
+                updateItems();
+                searchView.clearFocus();
+                return true;
+            }
+
+            @Override
+            public boolean onQueryTextChange(String newText) {
+                Log.d(TAG, "QueryTextChange: " + newText);
+                return false;
+            }
+        });
+
+        searchView.setOnSearchClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                String query = QueryPreferences.getStoredQuery(getActivity());
+                searchView.setQuery(query, false);
+                searchView.clearFocus();
+            }
+        });
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        switch (item.getItemId()) {
+            case R.id.menu_item_clear:
+                QueryPreferences.setStoredQuery(getActivity(), null);
+                updateItems();
+                return true;
+            default:
+                return super.onOptionsItemSelected(item);
+        }
+    }
+
+    public void showProgressBar(boolean isShow){
+        if (isShow){
+            mProgressBar.setVisibility(View.VISIBLE);
+            mPhotoRecyclerView.setVisibility(View.INVISIBLE);
+        } else {
+            mProgressBar.setVisibility(View.INVISIBLE);
+            mPhotoRecyclerView.setVisibility(View.VISIBLE);
+        }
+    }
+
+    private void updateItems() {
+        String query = QueryPreferences.getStoredQuery(getActivity());
+
+        if (mPhotoRecyclerView != null)
+
+        new FetchItemsTask(query, this).execute();
+    }
+
+    @Override
+    public void onDestroyView() {
+        super.onDestroyView();
+        mThumbnailDownloader.clearQueue();
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        mThumbnailDownloader.quit();
+        Log.i(TAG, "Background thread destroyed");
     }
 
     private void setupAdapter() {
@@ -109,9 +186,30 @@ public class PhotoGalleryFragment extends Fragment {
     // AsyncTask allows us to create a background thread that gets the data from a website and logs it.
     private class FetchItemsTask extends AsyncTask<Void, Void, List<GalleryItem>> {
 
+        private String mQuery;
+        private PhotoGalleryFragment mPhotoGalleryFragment;
+
+        public FetchItemsTask(String query, PhotoGalleryFragment fragment) {
+            mQuery = query;
+            mPhotoGalleryFragment = fragment;
+        }
+
+        @Override
+        protected void onPreExecute() {
+            super.onPreExecute();
+            if (mPhotoGalleryFragment.isResumed()) {
+                mPhotoGalleryFragment.showProgressBar(true);
+            }
+        }
+
         @Override
         protected List<GalleryItem> doInBackground(Void... params) {
-            return new FlickrFetchr().fetchItems();
+            if (mQuery == null) {
+                return new FlickrFetchr().fetchRecentPhotos();
+            }
+            else {
+                return new FlickrFetchr().searchPhotos(mQuery);
+            }
         }
 
         // Within this item we use the items that are passed in to setup the RecyclerView
@@ -120,6 +218,7 @@ public class PhotoGalleryFragment extends Fragment {
             mItems = items;
             setupAdapter();
             mUserScrolled = false;
+            mPhotoGalleryFragment.showProgressBar(false);
         }
     }
 
